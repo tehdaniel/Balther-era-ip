@@ -36,8 +36,16 @@ python tools/balter_cli.py dein@konto.de open --door 2 -v
 
 ## Entwicklung
 
+Protokoll und Client (ohne Home Assistant):
+
 ```bash
 PYTHONPATH=custom_components/balter_era python -m unittest discover -s tests -t .
+```
+
+Integration (mit `pip install pytest-homeassistant-custom-component`):
+
+```bash
+pytest tests_ha
 ```
 
 Das Protokoll ist in [docs/PROTOCOL.md](docs/PROTOCOL.md) beschrieben.
