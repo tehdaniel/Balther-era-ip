@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Balter ERA IP",
+        "description": "Log in with a Balter ERA IP app account. A separate account for Home Assistant is recommended, otherwise the phone app may be logged out.",
+        "data": {
+          "username": "[%key:common::config_flow::data::username%]",
+          "password": "[%key:common::config_flow::data::password%]",
+          "host": "Server",
+          "port": "[%key:common::config_flow::data::port%]"
+        },
+        "data_description": {
+          "host": "Balter cloud server. Only change this if Balter moves its server.",
+          "port": "Port of the account server."
+        }
+      },
+      "reauth_confirm": {
+        "title": "[%key:common::config_flow::title::reauth%]",
+        "description": "The password for {username} was rejected.",
+        "data": {
+          "password": "[%key:common::config_flow::data::password%]"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "no_devices": "No door system is linked to this account.",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
+    }
+  },
+  "entity": {
+    "button": {
+      "door_1": { "name": "Open door 1" },
+      "door_2": { "name": "Open door 2" }
+    }
+  },
+  "exceptions": {
+    "open_failed": { "message": "Opening the door failed: {error}" }
+  }
+}
