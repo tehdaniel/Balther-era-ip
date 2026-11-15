@@ -21,6 +21,11 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_HOST = "159.69.151.111"
 DEFAULT_PORT = 3478
 DEFAULT_TIMEOUT = 10.0
+# The outdoor station sits on a 2-wire bus and is powered up when a stream
+# starts; the first video frame arrives ~3.5 s later.  Door commands sent
+# before that are acknowledged by the relay but ignored by the station.
+DEFAULT_WAKE_TIMEOUT = 15.0
+DEFAULT_HOLD_TIME = 2.0
 
 
 class _Connection:
@@ -81,6 +86,19 @@ class _Connection:
             names = ", ".join(f"0x{cmd:04x}" for cmd in sorted(wanted))
             raise BalterProtocolError(f"timeout waiting for {names}") from err
 
+    async def wait_for_media(self, timeout: float) -> bool:
+        """Wait for the first media frame; False if none arrived in time."""
+
+        async def _wait() -> None:
+            while (await self.read()).msg_type != p.MSG_MEDIA:
+                pass
+
+        try:
+            await asyncio.wait_for(_wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
     async def close(self) -> None:
         self._writer.close()
         with contextlib.suppress(OSError):
@@ -98,12 +116,16 @@ class BalterClient:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
+        wake_timeout: float = DEFAULT_WAKE_TIMEOUT,
+        hold_time: float = DEFAULT_HOLD_TIME,
     ) -> None:
         self._username = username
         self._password = password
         self._host = host
         self._port = port
         self._timeout = timeout
+        self._wake_timeout = wake_timeout
+        self._hold_time = hold_time
         self._user_id = 0
         self._lock = asyncio.Lock()
 
@@ -153,8 +175,8 @@ class BalterClient:
     ) -> None:
         """Trigger a door relay of ``device``.
 
-        The app only offers the door buttons while the video is running, so
-        by default the video stream is started first, just like the app does.
+        Like the app, the video stream is started first and the command is
+        only sent once the outdoor station delivers video, i.e. is awake.
         """
         async with self._lock, self._account() as (account, login):
             await account.send(p.build_connect_request(login, device.device_id))
@@ -172,14 +194,34 @@ class BalterClient:
                 await self._view_login(view, ctx, info)
                 if start_video:
                     await view.send(p.build_stream_start(ctx, p.STREAM_VIDEO))
-                    with contextlib.suppress(BalterProtocolError):
-                        await view.expect({p.VIEW_STATUS}, self._timeout)
+                    loop = asyncio.get_running_loop()
+                    started = loop.time()
+                    if await view.wait_for_media(self._wake_timeout):
+                        _LOGGER.debug(
+                            "station awake, first video after %.1f s", loop.time() - started
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "no video within %.0f s, sending door command anyway",
+                            self._wake_timeout,
+                        )
                 await view.send(p.build_door_open(ctx, door))
                 await view.expect({p.VIEW_DOOR_OPEN_ACK}, self._timeout)
-                _LOGGER.debug("door %d acknowledged", door)
+                _LOGGER.debug("door %d acknowledged by relay", door)
+                # Keep the session up briefly so the station can execute it.
+                with contextlib.suppress(BalterError, TimeoutError):
+                    await asyncio.wait_for(self._drain(view), self._hold_time)
                 await view.send(p.build_stream_stop(ctx))
             finally:
                 await view.close()
+
+    @staticmethod
+    async def _drain(view: _Connection) -> None:
+        """Consume incoming frames until cancelled."""
+        while True:
+            msg = await view.read()
+            if msg.msg_type == p.MSG_CONTROL:
+                _LOGGER.debug("after door command: cmd 0x%04x %s", msg.cmd, msg.body[:24].hex())
 
     async def _view_login(
         self, view: _Connection, ctx: p.ViewContext, info: p.ConnectInfo

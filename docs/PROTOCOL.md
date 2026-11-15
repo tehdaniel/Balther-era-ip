@@ -78,6 +78,11 @@ das Ergebnis wird als Base-36-Zahl zusammengesetzt. Passt es nicht in 32 Bit, is
 | `0x007a` | → | **Tür öffnen**: `u32 geräte_id, u32 tür` – Tür 1 = `1`, Tür 2 = `101` |
 | `0x008a` | ← | Tür-Befehl bestätigt |
 
+**Timing beim Tür öffnen:** Die Außenstation hängt am 2-Draht-Bus und wird erst
+durch den Stream-Start eingeschaltet; das erste Videobild kommt nach ca. 3,5 s.
+Ein früher gesendetes `0x007a` wird vom Relay mit `0x008a` bestätigt, von der
+Station aber ignoriert. Deshalb erst auf das erste Medien-Frame warten.
+
 Über UDP stecken dieselben Nachrichten in einer eigenen Hülle
 (`02 07 <seq> <ids> 84 …`), die hier noch nicht umgesetzt ist.
 

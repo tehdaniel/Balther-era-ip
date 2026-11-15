@@ -70,9 +70,16 @@ class FakeCloud:
         finally:
             writer.close()
 
+    @staticmethod
+    async def _wake(writer: asyncio.StreamWriter) -> None:
+        """Outdoor station powers up and starts sending video."""
+        await asyncio.sleep(0.3)
+        writer.write(b"\x02\x02\x00\x07\x01\x00media")
+
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         challenge = b"fedcba9876543210"
         view_id = p.serial_to_view_id(SERIAL)
+        awake: asyncio.Task[None] | None = None
         try:
             while True:
                 msg = await _read(reader)
@@ -86,10 +93,13 @@ class FakeCloud:
                     writer.write(_reply(p.CLASS_VIEW, p.VIEW_AUTH_OK, p.u32(0x169178)))
                 elif msg.cmd == p.VIEW_STREAM_START:
                     assert p.read_u32(msg.header, 9) == 0x169178
-                    writer.write(b"\x02\x02\x00\x07\x01\x00media")  # media frame noise
                     writer.write(_reply(p.CLASS_VIEW, p.VIEW_STATUS, p.u32(view_id)))
+                    awake = asyncio.get_running_loop().create_task(self._wake(writer))
                 elif msg.cmd == p.VIEW_DOOR_OPEN:
-                    self.doors.append(p.read_u32(msg.body, 4))
+                    # Like the real relay: always acknowledged, but the
+                    # station only acts once it is awake.
+                    if awake is not None and awake.done():
+                        self.doors.append(p.read_u32(msg.body, 4))
                     writer.write(_reply(p.CLASS_VIEW, p.VIEW_DOOR_OPEN_ACK, p.u32(view_id)))
                 await writer.drain()
         except asyncio.IncompleteReadError:
@@ -112,7 +122,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
     def client(self, password: str = PASSWORD) -> BalterClient:
-        return BalterClient(USER, password, host="127.0.0.1", port=self.port, timeout=2)
+        return BalterClient(
+            USER, password, host="127.0.0.1", port=self.port, timeout=2, hold_time=0.1
+        )
 
     async def test_devices(self) -> None:
         (device,) = await self.client().async_get_devices()
