@@ -36,6 +36,19 @@ ACC_CONNECT_REQUEST = 0x0027
 ACC_CONNECT_INFO = 0x0028
 ACC_CHALLENGE_REQUEST = 0x0030
 ACC_CHALLENGE = 0x0031
+ACC_SET_PUSH = 0x004D
+
+# Push registration (InfoPush constants of the SDK).
+PUSH_DELETE = 0
+PUSH_FORCE_ADD = 1
+PUSH_OS_GOOGLE = 13
+PUSH_LANGUAGE_ENGLISH = 2
+
+# Media frames: 37 byte header, then the payload.
+MEDIA_HEADER_LEN = 37
+MEDIA_VIDEO_KEY = 0x91
+MEDIA_AUDIO = 0x21
+H264_START = b"\x00\x00\x00\x01"
 
 # View session (TCP, port 5439 on the relay named in ACC_CONNECT_INFO).
 VIEW_LOGIN = 0x0001
@@ -282,6 +295,28 @@ def build_connect_request(login: LoginResult, device_id: int) -> bytes:
     return frame(account_header(ACC_CONNECT_REQUEST) + body)
 
 
+def build_set_push(user_id: int, operation: int, token: str) -> bytes:
+    """Register (``PUSH_FORCE_ADD``) or remove (``PUSH_DELETE``) a push token.
+
+    Layout of ``CDServerSend::SendCmd_SetPushInfoEx``: the new push info
+    followed by the "old" one, which the app leaves empty.
+    """
+    body = (
+        bytes([operation])
+        + u32(user_id)
+        + u32(_CLIENT_TYPE)
+        + bytes([PUSH_LANGUAGE_ENGLISH])
+        + u32(2)
+        + b"\x01"
+        + bytes([PUSH_OS_GOOGLE])
+        + varstr(token.encode())
+        + b"\x00"
+        + b"\x00"  # old push OS
+        + varstr(b"")  # old token
+    )
+    return frame(account_header(ACC_SET_PUSH) + body)
+
+
 def parse_challenge(body: bytes) -> bytes:
     """Extract the 16 byte challenge."""
     if len(body) < 16:
@@ -384,6 +419,45 @@ def build_stream_stop(ctx: ViewContext) -> bytes:
 def build_door_open(ctx: ViewContext, door: int) -> bytes:
     """Trigger a door relay (``DOOR_1`` or ``DOOR_2``)."""
     return frame(ctx.header(VIEW_DOOR_OPEN) + u32(ctx.view_id) + u32(door))
+
+
+@dataclass(frozen=True)
+class MediaFrame:
+    """One audio or video frame from the relay."""
+
+    kind: int
+    timestamp: int
+    data: bytes
+
+    @property
+    def is_video(self) -> bool:
+        """Video frames carry an H.264 Annex B elementary stream."""
+        return self.data.startswith(H264_START)
+
+    @property
+    def is_keyframe(self) -> bool:
+        """True if the frame contains an IDR slice (NAL type 5)."""
+        return self.is_video and any(
+            nal & 0x1F == 5 for nal in _nal_types(self.data)
+        )
+
+
+def _nal_types(data: bytes) -> list[int]:
+    types = []
+    index = data.find(H264_START)
+    while index >= 0 and index + 4 < len(data):
+        types.append(data[index + 4])
+        index = data.find(H264_START, index + 4)
+    return types
+
+
+def parse_media(payload: bytes) -> MediaFrame:
+    """Decode a media payload (``Message.body`` of a ``MSG_MEDIA`` message)."""
+    if len(payload) < MEDIA_HEADER_LEN:
+        raise BalterProtocolError("media frame too short")
+    length = read_u32(payload, 33)
+    data = payload[MEDIA_HEADER_LEN : MEDIA_HEADER_LEN + length]
+    return MediaFrame(payload[18], read_u32(payload, 24), data)
 
 
 def parse_view_session_id(body: bytes) -> int:

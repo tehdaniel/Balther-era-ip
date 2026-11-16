@@ -11,6 +11,8 @@ from pybalter import BalterAuthError, BalterClient, protocol as p
 USER, PASSWORD = "user@example.com", "secret"
 SERIAL = "TEO00000TESTTEST0001"
 TOKEN, SECRET = b"@tokentokentoken", b"secretsecretsecr"
+KEYFRAME = p.H264_START + b"\x67sps" + p.H264_START + b"\x68pps" + p.H264_START + b"\x65idr"
+PFRAME = p.H264_START + b"\x41slice"
 
 
 async def _read(reader: asyncio.StreamReader) -> p.Message:
@@ -27,11 +29,22 @@ def _reply(msg_class: int, cmd: int, body: bytes) -> bytes:
     return p.frame(bytes(header) + body)
 
 
+def media_frame(kind: int, data: bytes) -> bytes:
+    """Media frame with the 37 byte header layout seen in captures."""
+    header = bytearray(p.MEDIA_HEADER_LEN)
+    header[0] = p.MSG_MEDIA
+    header[18] = kind
+    header[24:28] = p.u32(1_763_228_638)
+    header[33:37] = p.u32(len(data))
+    return p.frame(bytes(header) + data)
+
+
 class FakeCloud:
     """Implements just enough of the server side to drive the client."""
 
     def __init__(self) -> None:
         self.doors: list[int] = []
+        self.push: list[bytes] = []
         self.relay_port = 0
 
     async def account(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -64,6 +77,8 @@ class FakeCloud:
                         + TOKEN + SECRET
                     )
                     writer.write(_reply(p.CLASS_ACCOUNT, p.ACC_CONNECT_INFO, body))
+                elif msg.cmd == p.ACC_SET_PUSH:
+                    self.push.append(msg.body)
                 await writer.drain()
         except asyncio.IncompleteReadError:
             pass
@@ -71,15 +86,22 @@ class FakeCloud:
             writer.close()
 
     @staticmethod
-    async def _wake(writer: asyncio.StreamWriter) -> None:
+    async def _wake(writer: asyncio.StreamWriter, state: dict[str, bool]) -> None:
         """Outdoor station powers up and starts sending video."""
         await asyncio.sleep(0.3)
-        writer.write(b"\x02\x02\x00\x07\x01\x00media")
+        state["awake"] = True
+        writer.write(p.frame(b"\x01\x00broken"))  # malformed, must be skipped
+        writer.write(media_frame(p.MEDIA_AUDIO, b"\x21" * 33))
+        writer.write(media_frame(p.MEDIA_VIDEO_KEY, KEYFRAME))
+        for _ in range(3):
+            await asyncio.sleep(0.01)
+            writer.write(media_frame(0x90, PFRAME))
+        await writer.drain()
 
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         challenge = b"fedcba9876543210"
         view_id = p.serial_to_view_id(SERIAL)
-        awake: asyncio.Task[None] | None = None
+        state = {"awake": False}
         try:
             while True:
                 msg = await _read(reader)
@@ -94,15 +116,15 @@ class FakeCloud:
                 elif msg.cmd == p.VIEW_STREAM_START:
                     assert p.read_u32(msg.header, 9) == 0x169178
                     writer.write(_reply(p.CLASS_VIEW, p.VIEW_STATUS, p.u32(view_id)))
-                    awake = asyncio.get_running_loop().create_task(self._wake(writer))
+                    asyncio.get_running_loop().create_task(self._wake(writer, state))
                 elif msg.cmd == p.VIEW_DOOR_OPEN:
                     # Like the real relay: always acknowledged, but the
                     # station only acts once it is awake.
-                    if awake is not None and awake.done():
+                    if state["awake"]:
                         self.doors.append(p.read_u32(msg.body, 4))
                     writer.write(_reply(p.CLASS_VIEW, p.VIEW_DOOR_OPEN_ACK, p.u32(view_id)))
                 await writer.drain()
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, ConnectionResetError):
             pass
         finally:
             writer.close()
@@ -140,6 +162,32 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_password(self) -> None:
         with self.assertRaises(BalterAuthError):
             await self.client("wrong").async_get_devices()
+
+    async def test_snapshot_returns_keyframe(self) -> None:
+        client = self.client()
+        (device,) = await client.async_get_devices()
+        self.assertEqual(await client.async_snapshot(device), KEYFRAME)
+
+    async def test_stream_yields_video_only(self) -> None:
+        client = self.client()
+        (device,) = await client.async_get_devices()
+        frames = []
+        async for frame in client.async_stream(device):
+            frames.append(frame)
+            if len(frames) == 3:
+                break
+        self.assertEqual(frames, [KEYFRAME, PFRAME, PFRAME])
+
+    async def test_push_registration(self) -> None:
+        client = self.client()
+        await client.async_set_push_token("fcm-token")
+        await client.async_set_push_token("fcm-token", register=False)
+        added, removed = self.cloud.push
+        self.assertEqual(added[0], p.PUSH_FORCE_ADD)
+        self.assertEqual(removed[0], p.PUSH_DELETE)
+        self.assertEqual(p.read_u32(added, 1), 0x1234)
+        self.assertEqual(added[15], p.PUSH_OS_GOOGLE)
+        self.assertEqual(added[16 : 17 + added[16]], p.varstr(b"fcm-token"))
 
 
 if __name__ == "__main__":

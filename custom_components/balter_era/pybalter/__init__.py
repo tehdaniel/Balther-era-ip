@@ -12,6 +12,8 @@ from .exceptions import (
 )
 from .protocol import DOOR_1, DOOR_2, DeviceRecord
 
+# BalterPushListener lives in .push and needs the firebase-messaging package.
+
 __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",

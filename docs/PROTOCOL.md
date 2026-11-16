@@ -86,14 +86,40 @@ Station aber ignoriert. Deshalb erst auf das erste Medien-Frame warten.
 Über UDP stecken dieselben Nachrichten in einer eigenen Hülle
 (`02 07 <seq> <ids> 84 …`), die hier noch nicht umgesetzt ist.
 
+## Medien-Frames
+
+Payload-Typ `01`, 37 Byte Kopf, danach die Nutzdaten:
+
+| Offset | Inhalt |
+|---|---|
+| 0 | `01` |
+| 4–5 | Laufnummer |
+| 14–17 | Geräte-ID |
+| 18 | Art: `0x91` Video-Schlüsselbild, `0x21` Audio (33 Byte) |
+| 24–27 | Unix-Zeitstempel |
+| 28–31 | Millisekunden-Zähler |
+| 33–36 | Länge der Nutzdaten |
+
+Video ist H.264 Baseline, 704×576, Annex-B (`00 00 00 01`). Das erste Bild nach
+dem Stream-Start ist ein Schlüsselbild mit SPS, PPS, SEI und IDR.
+
 ## Klingeln
 
 Klingel-Ereignisse kommen nicht über die Verbindungen der App, sondern als
-Firebase-Push (Projekt `bell-vision-project`, Absender-ID `208250547295`). Das
-Push-Token wird beim Login bzw. per SetPushInfo am Server hinterlegt.
+Firebase-Push (Projekt `bell-vision-project`, Absender-ID `208250547295`).
+
+Token hinterlegen: Befehl `0x004d` (`SendCmd_SetPushInfoEx`) auf dem Konto-Kanal:
+
+```
+u8 Operation (0 löschen, 1 FORCE_ADD), u32 user_id, u32 0x03000001,
+u8 Sprache (2 = Englisch), u32 2, u8 1, u8 pushOS (13 = Google), varstr Token,
+u8 0, u8 altes pushOS, varstr altes Token
+```
+
+Der Inhalt der Push-Nachricht ist noch nicht bekannt.
 
 ## Offen
 
-- Klingel-Ereignis: eigenen FCM-Empfänger registrieren und das Token hinterlegen.
-- Kamera: H.264 aus den Medien-Frames (`01 …`) an go2rtc/HA weitergeben.
+- Inhalt der Klingel-Push-Nachricht auswerten (Klingeln vs. andere Meldungen).
+- Audio (33-Byte-Frames, Codec unbekannt) und Gegensprechen.
 - Direktverbindung im LAN (Monitore lauschen auf TCP/UDP 14622).
