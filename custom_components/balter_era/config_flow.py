@@ -1,0 +1,97 @@
+"""Config flow for the Balter ERA IP integration."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+
+from . import create_client
+from .const import DOMAIN
+from .pybalter import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    BalterAuthError,
+    BalterConnectionError,
+    BalterError,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+USER_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_USERNAME): str,
+        vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_HOST, default=DEFAULT_HOST): str,
+        vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
+    }
+)
+REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
+
+
+async def _validate(data: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
+    """Try to log in; return (title, errors)."""
+    try:
+        devices = await create_client(data).async_validate()
+    except BalterAuthError:
+        return None, {"base": "invalid_auth"}
+    except BalterConnectionError:
+        return None, {"base": "cannot_connect"}
+    except BalterError:
+        _LOGGER.exception("Unexpected protocol error during login")
+        return None, {"base": "unknown"}
+    if not devices:
+        return None, {"base": "no_devices"}
+    return f"Balter ERA ({devices[0].name})", {}
+
+
+class BalterConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Balter ERA IP."""
+
+    VERSION = 1
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the Balter account."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            await self.async_set_unique_id(user_input[CONF_USERNAME].strip().lower())
+            self._abort_if_unique_id_configured()
+            title, errors = await _validate(user_input)
+            if title:
+                return self.async_create_entry(title=title, data=user_input)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start re-authentication after the password was rejected."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the new password."""
+        errors: dict[str, str] = {}
+        entry = self._get_reauth_entry()
+        if user_input is not None:
+            data = {**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
+            title, errors = await _validate(data)
+            if title:
+                return self.async_update_reload_and_abort(entry, data=data)
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=REAUTH_SCHEMA,
+            errors=errors,
+            description_placeholders={CONF_USERNAME: entry.data[CONF_USERNAME]},
+        )

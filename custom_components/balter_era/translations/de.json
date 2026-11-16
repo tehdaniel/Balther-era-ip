@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Balter ERA IP",
+        "description": "Mit einem Konto der Balter-ERA-IP-App anmelden. Empfohlen ist ein eigenes Konto für Home Assistant, sonst wird die Handy-App eventuell abgemeldet.",
+        "data": {
+          "username": "Benutzername",
+          "password": "Passwort",
+          "host": "Server",
+          "port": "Port"
+        },
+        "data_description": {
+          "host": "Balter-Cloud-Server. Nur ändern, falls Balter den Server wechselt.",
+          "port": "Port des Konto-Servers."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Erneut anmelden",
+        "description": "Das Passwort für {username} wurde abgelehnt.",
+        "data": {
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung fehlgeschlagen",
+      "invalid_auth": "Benutzername oder Passwort falsch",
+      "no_devices": "Mit diesem Konto ist keine Türanlage verknüpft.",
+      "unknown": "Unerwarteter Fehler"
+    },
+    "abort": {
+      "already_configured": "Dieses Konto ist bereits eingerichtet",
+      "reauth_successful": "Erneute Anmeldung erfolgreich"
+    }
+  },
+  "entity": {
+    "button": {
+      "door_1": { "name": "Tür 1 öffnen" },
+      "door_2": { "name": "Tür 2 öffnen" }
+    }
+  },
+  "exceptions": {
+    "open_failed": { "message": "Tür öffnen fehlgeschlagen: {error}" }
+  }
+}

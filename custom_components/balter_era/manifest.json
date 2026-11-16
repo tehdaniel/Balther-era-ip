@@ -1,0 +1,13 @@
+{
+  "domain": "balter_era",
+  "name": "Balter ERA IP",
+  "codeowners": ["@tehdaniel"],
+  "config_flow": true,
+  "documentation": "https://github.com/tehdaniel/Balther-era-ip",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/tehdaniel/Balther-era-ip/issues",
+  "loggers": ["custom_components.balter_era.pybalter"],
+  "requirements": [],
+  "version": "0.1.0"
+}
