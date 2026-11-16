@@ -7,3 +7,8 @@ __pycache__/
 *.pcap
 *.pcapng
 *.apk
+
+# Local CLI output: push credentials and camera images.
+balter_fcm_credentials.json
+*.h264
+*.jpg

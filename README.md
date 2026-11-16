@@ -8,13 +8,22 @@ Android-App „Balter ERA IP“.
 
 ## Stand
 
-| Funktion | Status |
-|---|---|
-| Anmeldung mit App-Konto | ✅ |
-| Tür 1 / Tür 2 öffnen (Buttons) | ✅ im Test gegen nachgebaute Server-Antworten, am echten Gerät noch ungetestet |
-| Klingel-Ereignis | geplant (Firebase-Push) |
-| Kamerabild | geplant (H.264 aus dem Video-Stream) |
-| Betrieb rein im LAN | offen |
+| Funktion | Entität | Status |
+|---|---|---|
+| Anmeldung mit App-Konto | – | ✅ am echten Gerät getestet |
+| Tür 1 / Tür 2 öffnen | `button.…_tur_1_offnen`, `button.…_tur_2_offnen` | ✅ Tür 2 am echten Gerät getestet |
+| Klingeln | `event.…_turklingel` (Ereignis `ring`) | neu, am echten Gerät noch ungetestet |
+| Kamerabild | `camera.…` (Standbild + MJPEG-Live-Bild) | neu, am echten Gerät noch ungetestet |
+| Kamerabild aktualisieren | `button.…_kamerabild_aktualisieren` | neu |
+| Betrieb rein im LAN | – | offen |
+
+Jeder Zugriff auf die Kamera schaltet die Außenstation ein (ca. 3,5 s bis zum
+ersten Bild). Das Standbild wird deshalb zwischengespeichert und nur beim
+Klingeln, über den Aktualisieren-Knopf oder einmalig beim Start neu geholt.
+Das Live-Bild läuft, solange es in Home Assistant geöffnet ist.
+
+Klingel-Meldungen kommen wie in der App als Firebase-Push. Home Assistant
+registriert dafür ein eigenes Push-Token beim Balter-Konto.
 
 ## Installation
 
@@ -32,7 +41,12 @@ die Handy-App abgemeldet.
 ```bash
 python tools/balter_cli.py dein@konto.de devices
 python tools/balter_cli.py dein@konto.de open --door 2 -v
+python tools/balter_cli.py dein@konto.de snapshot --out bild.jpg -v
+pip install firebase-messaging
+python tools/balter_cli.py dein@konto.de listen -v
 ```
+
+`snapshot` braucht `ffmpeg` im PATH für JPEG (sonst wird die rohe `.h264` gespeichert).
 
 ## Entwicklung
 

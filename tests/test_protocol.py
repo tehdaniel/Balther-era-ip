@@ -112,5 +112,34 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(info.secret, b"b" * 16)
 
 
+class PushAndMediaTests(unittest.TestCase):
+    def test_set_push_layout(self) -> None:
+        # Offsets as written by CDServerSend::SendCmd_SetPushInfoEx.
+        body = p.build_set_push(0x1234, p.PUSH_FORCE_ADD, "tok")[4 + p.HEADER_LEN :]
+        self.assertEqual(
+            body.hex(),
+            "01" "00001234" "03000001" "02" "00000002" "01" "0d" "03746f6b" "00" "00" "00",
+        )
+        self.assertEqual(p.build_set_push(1, p.PUSH_FORCE_ADD, "t")[6:8], b"\x00\x4d")
+
+    def test_parse_media_video_keyframe(self) -> None:
+        data = p.H264_START + b"\x67x" + p.H264_START + b"\x65y"
+        payload = bytearray(p.MEDIA_HEADER_LEN)
+        payload[0], payload[18] = p.MSG_MEDIA, p.MEDIA_VIDEO_KEY
+        payload[24:28] = p.u32(1_763_228_638)
+        payload[33:37] = p.u32(len(data))
+        frame = p.parse_media(bytes(payload) + data)
+        self.assertEqual((frame.kind, frame.timestamp, frame.data), (0x91, 1_763_228_638, data))
+        self.assertTrue(frame.is_video and frame.is_keyframe)
+
+    def test_parse_media_audio(self) -> None:
+        payload = bytearray(p.MEDIA_HEADER_LEN)
+        payload[18] = p.MEDIA_AUDIO
+        payload[33:37] = p.u32(4)
+        frame = p.parse_media(bytes(payload) + b"\x21abc")
+        self.assertFalse(frame.is_video)
+        self.assertFalse(frame.is_keyframe)
+
+
 if __name__ == "__main__":
     unittest.main()

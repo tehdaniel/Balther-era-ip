@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from typing import Any
 
+from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -12,9 +16,13 @@ from homeassistant.const import (
     CONF_USERNAME,
     Platform,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+from .const import CONF_FCM_CREDENTIALS, signal_image, signal_ring
+from .media import h264_to_jpeg
 from .pybalter import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -24,7 +32,9 @@ from .pybalter import (
     DeviceRecord,
 )
 
-PLATFORMS: list[Platform] = [Platform.BUTTON]
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.CAMERA, Platform.EVENT]
 
 
 @dataclass
@@ -33,6 +43,9 @@ class BalterData:
 
     client: BalterClient
     devices: list[DeviceRecord]
+    images: dict[str, bytes] = field(default_factory=dict)
+    push: Any = None
+    refreshing: dict[str, asyncio.Task[None]] = field(default_factory=dict)
 
 
 type BalterConfigEntry = ConfigEntry[BalterData]
@@ -48,6 +61,26 @@ def create_client(data: dict) -> BalterClient:
     )
 
 
+async def async_refresh_image(
+    hass: HomeAssistant, entry: BalterConfigEntry, device: DeviceRecord
+) -> None:
+    """Fetch a new still image; concurrent requests share one fetch."""
+    data = entry.runtime_data
+    task = data.refreshing.get(device.serial)
+    if task is None or task.done():
+
+        async def _fetch() -> None:
+            keyframe = await data.client.async_snapshot(device)
+            data.images[device.serial] = await h264_to_jpeg(
+                get_ffmpeg_manager(hass).binary, keyframe
+            )
+            async_dispatcher_send(hass, signal_image(entry.entry_id, device.serial))
+
+        task = hass.async_create_task(_fetch(), eager_start=False)
+        data.refreshing[device.serial] = task
+    await asyncio.shield(task)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> bool:
     """Set up Balter ERA IP from a config entry."""
     client = create_client(dict(entry.data))
@@ -60,9 +93,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> bo
 
     entry.runtime_data = BalterData(client=client, devices=devices)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_create_background_task(
+        hass, _async_start_push(hass, entry), f"{entry.title} doorbell push"
+    )
     return True
+
+
+async def _async_start_push(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
+    """Start receiving doorbell notifications; failures only disable rings."""
+    from .pybalter.push import BalterPushListener  # noqa: PLC0415
+
+    data = entry.runtime_data
+
+    @callback
+    def _store_credentials(credentials: dict[str, Any]) -> None:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_FCM_CREDENTIALS: credentials}
+        )
+
+    @callback
+    def _on_push(payload: dict[str, Any]) -> None:
+        _LOGGER.debug("Doorbell push: %s", payload)
+        for device in data.devices:
+            async_dispatcher_send(
+                hass, signal_ring(entry.entry_id, device.serial), payload
+            )
+
+    listener = BalterPushListener(
+        data.client,
+        _on_push,
+        credentials=entry.data.get(CONF_FCM_CREDENTIALS),
+        on_credentials=lambda creds: hass.loop.call_soon_threadsafe(
+            _store_credentials, creds
+        ),
+        http_session=async_get_clientsession(hass),
+    )
+    try:
+        await listener.async_start()
+    except Exception:  # noqa: BLE001 - optional feature, never break setup
+        _LOGGER.warning(
+            "Doorbell notifications are not available", exc_info=True
+        )
+        return
+    data.push = listener
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> bool:
     """Unload a config entry."""
+    if entry.runtime_data.push:
+        await entry.runtime_data.push.async_stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
+    """Remove our push token from the Balter account."""
+    credentials = entry.data.get(CONF_FCM_CREDENTIALS) or {}
+    token = credentials.get("fcm", {}).get("registration", {}).get("token")
+    if not token:
+        return
+    try:
+        await create_client(dict(entry.data)).async_set_push_token(token, register=False)
+    except BalterError as err:
+        _LOGGER.debug("Could not remove push token: %s", err)

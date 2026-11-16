@@ -1,13 +1,22 @@
 {
   "domain": "balter_era",
   "name": "Balter ERA IP",
-  "codeowners": ["@tehdaniel"],
+  "codeowners": [
+    "@tehdaniel"
+  ],
   "config_flow": true,
+  "dependencies": [
+    "ffmpeg"
+  ],
   "documentation": "https://github.com/tehdaniel/Balther-era-ip",
   "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/tehdaniel/Balther-era-ip/issues",
-  "loggers": ["custom_components.balter_era.pybalter"],
-  "requirements": [],
-  "version": "0.1.0"
+  "loggers": [
+    "custom_components.balter_era.pybalter"
+  ],
+  "requirements": [
+    "firebase-messaging==0.4.5"
+  ],
+  "version": "0.2.0"
 }

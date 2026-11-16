@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import secrets
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 
 from . import protocol as p
 from .exceptions import (
@@ -26,6 +26,18 @@ DEFAULT_TIMEOUT = 10.0
 # before that are acknowledged by the relay but ignored by the station.
 DEFAULT_WAKE_TIMEOUT = 15.0
 DEFAULT_HOLD_TIME = 2.0
+KEEPALIVE_INTERVAL = 10.0
+
+
+def _media(msg: p.Message) -> p.MediaFrame | None:
+    """Decode a media message; malformed frames are skipped."""
+    if msg.msg_type != p.MSG_MEDIA:
+        return None
+    try:
+        return p.parse_media(msg.body)
+    except BalterProtocolError:
+        _LOGGER.debug("skipping malformed media frame (%d bytes)", len(msg.body))
+        return None
 
 
 class _Connection:
@@ -86,18 +98,33 @@ class _Connection:
             names = ", ".join(f"0x{cmd:04x}" for cmd in sorted(wanted))
             raise BalterProtocolError(f"timeout waiting for {names}") from err
 
-    async def wait_for_media(self, timeout: float) -> bool:
-        """Wait for the first media frame; False if none arrived in time."""
+    async def next_media(
+        self, timeout: float, accept: Callable[[p.MediaFrame], bool]
+    ) -> p.MediaFrame | None:
+        """Return the first media frame accepted by ``accept``, None on timeout."""
 
-        async def _wait() -> None:
-            while (await self.read()).msg_type != p.MSG_MEDIA:
-                pass
+        async def _wait() -> p.MediaFrame:
+            while True:
+                frame = _media(await self.read())
+                if frame and accept(frame):
+                    return frame
 
         try:
-            await asyncio.wait_for(_wait(), timeout)
+            return await asyncio.wait_for(_wait(), timeout)
         except TimeoutError:
-            return False
-        return True
+            return None
+
+    async def log_incoming(self, duration: float) -> None:
+        """Log control messages for a while (protocol exploration)."""
+
+        async def _drain() -> None:
+            while True:
+                msg = await self.read()
+                if msg.msg_type == p.MSG_CONTROL:
+                    _LOGGER.debug("received cmd 0x%04x %s", msg.cmd, msg.body[:32].hex())
+
+        with contextlib.suppress(BalterError, TimeoutError):
+            await asyncio.wait_for(_drain(), duration)
 
     async def close(self) -> None:
         self._writer.close()
@@ -128,6 +155,8 @@ class BalterClient:
         self._hold_time = hold_time
         self._user_id = 0
         self._lock = asyncio.Lock()
+
+    # --- account channel ---------------------------------------------------
 
     @contextlib.asynccontextmanager
     async def _account(self) -> AsyncIterator[tuple[_Connection, p.LoginResult]]:
@@ -170,21 +199,34 @@ class BalterClient:
             reply = await conn.expect({p.ACC_DEVICE_LIST}, self._timeout)
             return p.parse_device_list(reply.body)
 
-    async def async_open_door(
-        self, device: p.DeviceRecord, door: int, *, start_video: bool = True
-    ) -> None:
-        """Trigger a door relay of ``device``.
+    async def async_set_push_token(self, token: str, *, register: bool = True) -> None:
+        """Register (or remove) an FCM token for doorbell notifications."""
+        operation = p.PUSH_FORCE_ADD if register else p.PUSH_DELETE
+        async with self._lock, self._account() as (conn, login):
+            await conn.send(p.build_set_push(login.user_id, operation, token))
+            # The reply format is not known yet; log what comes back.
+            await conn.log_incoming(2.0)
+        _LOGGER.debug("push token %s", "registered" if register else "removed")
 
-        Like the app, the video stream is started first and the command is
-        only sent once the outdoor station delivers video, i.e. is awake.
-        """
-        async with self._lock, self._account() as (account, login):
+    # --- view session ------------------------------------------------------
+
+    @contextlib.asynccontextmanager
+    async def _view(
+        self, device: p.DeviceRecord, *, keepalive: bool = False
+    ) -> AsyncIterator[tuple[_Connection, p.ViewContext]]:
+        """Log in, ask for relay tokens and open an authenticated view session."""
+        async with self._account() as (account, login):
             await account.send(p.build_connect_request(login, device.device_id))
             info = p.parse_connect_info(
                 (await account.expect({p.ACC_CONNECT_INFO}, self._timeout)).body
             )
             _LOGGER.debug("relay %s:%d", info.relay_host, info.relay_port)
             view = await _Connection.open(info.relay_host, info.relay_port, self._timeout)
+            pinger = (
+                asyncio.get_running_loop().create_task(self._keepalive(account))
+                if keepalive
+                else None
+            )
             try:
                 ctx = p.ViewContext(
                     view_id=device.view_id,
@@ -192,36 +234,20 @@ class BalterClient:
                     conn_id=secrets.randbits(16),
                 )
                 await self._view_login(view, ctx, info)
-                if start_video:
-                    await view.send(p.build_stream_start(ctx, p.STREAM_VIDEO))
-                    loop = asyncio.get_running_loop()
-                    started = loop.time()
-                    if await view.wait_for_media(self._wake_timeout):
-                        _LOGGER.debug(
-                            "station awake, first video after %.1f s", loop.time() - started
-                        )
-                    else:
-                        _LOGGER.warning(
-                            "no video within %.0f s, sending door command anyway",
-                            self._wake_timeout,
-                        )
-                await view.send(p.build_door_open(ctx, door))
-                await view.expect({p.VIEW_DOOR_OPEN_ACK}, self._timeout)
-                _LOGGER.debug("door %d acknowledged by relay", door)
-                # Keep the session up briefly so the station can execute it.
-                with contextlib.suppress(BalterError, TimeoutError):
-                    await asyncio.wait_for(self._drain(view), self._hold_time)
-                await view.send(p.build_stream_stop(ctx))
+                yield view, ctx
             finally:
+                if pinger:
+                    pinger.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, BalterError):
+                        await pinger
                 await view.close()
 
     @staticmethod
-    async def _drain(view: _Connection) -> None:
-        """Consume incoming frames until cancelled."""
+    async def _keepalive(account: _Connection) -> None:
+        """Keep the account session alive during long streams, like the app."""
         while True:
-            msg = await view.read()
-            if msg.msg_type == p.MSG_CONTROL:
-                _LOGGER.debug("after door command: cmd 0x%04x %s", msg.cmd, msg.body[:24].hex())
+            await asyncio.sleep(KEEPALIVE_INTERVAL)
+            await account.send(p.KEEPALIVE)
 
     async def _view_login(
         self, view: _Connection, ctx: p.ViewContext, info: p.ConnectInfo
@@ -236,3 +262,59 @@ class BalterClient:
         except BalterError as err:
             raise BalterAuthError(f"relay rejected session: {err}") from err
         ctx.session_id = p.parse_view_session_id(reply.body)
+
+    async def _start_video(self, view: _Connection, ctx: p.ViewContext) -> p.MediaFrame | None:
+        """Start video and wait until the outdoor station delivers a frame."""
+        await view.send(p.build_stream_start(ctx, p.STREAM_VIDEO))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        frame = await view.next_media(self._wake_timeout, lambda f: f.is_video)
+        if frame:
+            _LOGGER.debug("station awake, first video after %.1f s", loop.time() - started)
+        else:
+            _LOGGER.warning("no video from the station within %.0f s", self._wake_timeout)
+        return frame
+
+    async def async_open_door(
+        self, device: p.DeviceRecord, door: int, *, start_video: bool = True
+    ) -> None:
+        """Trigger a door relay of ``device``.
+
+        Like the app, the video stream is started first and the command is
+        only sent once the outdoor station delivers video, i.e. is awake.
+        """
+        async with self._lock, self._view(device) as (view, ctx):
+            if start_video:
+                await self._start_video(view, ctx)
+            await view.send(p.build_door_open(ctx, door))
+            await view.expect({p.VIEW_DOOR_OPEN_ACK}, self._timeout)
+            _LOGGER.debug("door %d acknowledged by relay", door)
+            # Keep the session up briefly so the station can execute it.
+            await view.log_incoming(self._hold_time)
+            await view.send(p.build_stream_stop(ctx))
+
+    async def async_snapshot(self, device: p.DeviceRecord) -> bytes:
+        """Return one H.264 keyframe (SPS, PPS, IDR; Annex B) from the camera."""
+        async with self._lock, self._view(device) as (view, ctx):
+            first = await self._start_video(view, ctx)
+            frame = first if first and first.is_keyframe else None
+            if frame is None:
+                frame = await view.next_media(self._wake_timeout, lambda f: f.is_keyframe)
+            with contextlib.suppress(BalterError):
+                await view.send(p.build_stream_stop(ctx))
+        if frame is None:
+            raise BalterProtocolError("no keyframe received from the camera")
+        return frame.data
+
+    async def async_stream(self, device: p.DeviceRecord) -> AsyncIterator[bytes]:
+        """Yield H.264 video frames (Annex B) until the consumer stops iterating."""
+        async with self._view(device, keepalive=True) as (view, ctx):
+            await view.send(p.build_stream_start(ctx, p.STREAM_VIDEO))
+            try:
+                while True:
+                    frame = _media(await view.read())
+                    if frame and frame.is_video:
+                        yield frame.data
+            finally:
+                with contextlib.suppress(BalterError):
+                    await view.send(p.build_stream_stop(ctx))

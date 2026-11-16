@@ -36,11 +36,35 @@
   },
   "entity": {
     "button": {
-      "door_1": { "name": "Tür 1 öffnen" },
-      "door_2": { "name": "Tür 2 öffnen" }
+      "door_1": {
+        "name": "Tür 1 öffnen"
+      },
+      "door_2": {
+        "name": "Tür 2 öffnen"
+      },
+      "refresh_image": {
+        "name": "Kamerabild aktualisieren"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Türklingel",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Klingeln"
+            }
+          }
+        }
+      }
     }
   },
   "exceptions": {
-    "open_failed": { "message": "Tür öffnen fehlgeschlagen: {error}" }
+    "open_failed": {
+      "message": "Tür öffnen fehlgeschlagen: {error}"
+    },
+    "image_failed": {
+      "message": "Kamerabild konnte nicht geladen werden: {error}"
+    }
   }
 }

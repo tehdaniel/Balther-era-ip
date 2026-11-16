@@ -36,11 +36,35 @@
   },
   "entity": {
     "button": {
-      "door_1": { "name": "Open door 1" },
-      "door_2": { "name": "Open door 2" }
+      "door_1": {
+        "name": "Open door 1"
+      },
+      "door_2": {
+        "name": "Open door 2"
+      },
+      "refresh_image": {
+        "name": "Refresh camera image"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Doorbell",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Ring"
+            }
+          }
+        }
+      }
     }
   },
   "exceptions": {
-    "open_failed": { "message": "Opening the door failed: {error}" }
+    "open_failed": {
+      "message": "Opening the door failed: {error}"
+    },
+    "image_failed": {
+      "message": "Fetching the camera image failed: {error}"
+    }
   }
 }
