@@ -8,11 +8,18 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from . import create_client
-from .const import DOMAIN
+from .const import CONF_CLOUD_RING, CONF_RING_ENTITY, DOMAIN
 from .pybalter import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -32,6 +39,7 @@ USER_SCHEMA = vol.Schema(
     }
 )
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
+RING_ENTITY_DOMAINS = ["binary_sensor", "event", "input_boolean", "switch"]
 
 
 async def _validate(data: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
@@ -54,6 +62,12 @@ class BalterConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Balter ERA IP."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> BalterOptionsFlow:
+        """Options: doorbell source."""
+        return BalterOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -94,4 +108,29 @@ class BalterConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=REAUTH_SCHEMA,
             errors=errors,
             description_placeholders={CONF_USERNAME: entry.data[CONF_USERNAME]},
+        )
+
+
+class BalterOptionsFlow(OptionsFlow):
+    """Choose where doorbell rings come from."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_RING_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=RING_ENTITY_DOMAINS)
+                ),
+                vol.Optional(CONF_CLOUD_RING, default=False): bool,
+            }
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, dict(self.config_entry.options)
+            ),
         )

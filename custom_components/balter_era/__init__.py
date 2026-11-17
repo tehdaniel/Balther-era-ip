@@ -14,14 +14,24 @@ from homeassistant.const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_USERNAME,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     Platform,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import CONF_FCM_CREDENTIALS, signal_image, signal_ring
+from .const import (
+    CONF_CLOUD_RING,
+    CONF_FCM_CREDENTIALS,
+    CONF_RING_ENTITY,
+    signal_image,
+    signal_ring,
+)
 from .media import h264_to_jpeg
 from .pybalter import (
     DEFAULT_HOST,
@@ -49,6 +59,7 @@ class BalterData:
     refreshing: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     in_call: set[int] = field(default_factory=set)
     last_ring: dict[str, float] = field(default_factory=dict)
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 RING_DEDUPE_SECONDS = 30.0
@@ -114,15 +125,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> bo
     except BalterError as err:
         raise ConfigEntryNotReady(str(err)) from err
 
-    entry.runtime_data = BalterData(client=client, devices=devices)
+    entry.runtime_data = BalterData(
+        client=client, devices=devices, options=dict(entry.options)
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_create_background_task(
-        hass, _async_start_push(hass, entry), f"{entry.title} doorbell push"
-    )
-    entry.async_create_background_task(
-        hass, _async_watch(hass, entry), f"{entry.title} account session"
-    )
+
+    if ring_entity := entry.options.get(CONF_RING_ENTITY):
+        _async_track_ring_entity(hass, entry, ring_entity)
+    if entry.options.get(CONF_CLOUD_RING, False):
+        entry.async_create_background_task(
+            hass, _async_start_push(hass, entry), f"{entry.title} doorbell push"
+        )
+        entry.async_create_background_task(
+            hass, _async_watch(hass, entry), f"{entry.title} account session"
+        )
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
+    """Reload when the options change (not when we store push credentials)."""
+    if dict(entry.options) != entry.runtime_data.options:
+        await hass.config_entries.async_reload(entry.entry_id)
+
+
+@callback
+def _async_track_ring_entity(
+    hass: HomeAssistant, entry: BalterConfigEntry, entity_id: str
+) -> None:
+    """Ring when an external sensor fires, e.g. a Shelly on the indoor monitor.
+
+    binary_sensor / input_boolean / switch ring on the change to "on";
+    event entities (Shelly button inputs) ring on every new event.
+    """
+
+    @callback
+    def _on_change(event: Event[EventStateChangedData]) -> None:
+        new, old = event.data["new_state"], event.data["old_state"]
+        invalid = (STATE_UNAVAILABLE, STATE_UNKNOWN)
+        # Ignore (re)appearing entities, e.g. after a restart or Wi-Fi drop.
+        if new is None or old is None or new.state in invalid or old.state in invalid:
+            return
+        if new.domain == "event":
+            if new.state == old.state:
+                return  # attribute update, no new event
+        elif new.state != STATE_ON or old.state == STATE_ON:
+            return
+        for device in entry.runtime_data.devices:
+            async_fire_ring(hass, entry, device, {"source": "entity", "entity_id": entity_id})
+
+    entry.async_on_unload(async_track_state_change_event(hass, entity_id, _on_change))
 
 
 async def _async_watch(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
