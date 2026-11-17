@@ -66,5 +66,21 @@
     "image_failed": {
       "message": "Fetching the camera image failed: {error}"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Doorbell",
+        "description": "Choose where doorbell rings come from. Recommended: a sensor wired to the indoor monitor, e.g. a Shelly input.",
+        "data": {
+          "ring_entity": "Doorbell sensor",
+          "cloud_ring": "Also listen to the Balter cloud (experimental)"
+        },
+        "data_description": {
+          "ring_entity": "Binary sensor, switch, input boolean (rings when it turns on) or event entity (rings on every event).",
+          "cloud_ring": "Keeps a connection to the Balter cloud open and registers for push notifications. Did not deliver rings in tests."
+        }
+      }
+    }
   }
 }

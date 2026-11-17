@@ -9,6 +9,8 @@ MANUFACTURER: Final = "Balter"
 MODEL: Final = "ERA IP"
 
 CONF_FCM_CREDENTIALS: Final = "fcm_credentials"
+CONF_RING_ENTITY: Final = "ring_entity"
+CONF_CLOUD_RING: Final = "cloud_ring"
 
 
 def signal_ring(entry_id: str, serial: str) -> str:

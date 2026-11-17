@@ -9,7 +9,13 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.balter_era import async_fire_ring
-from custom_components.balter_era.const import CONF_FCM_CREDENTIALS, DOMAIN, signal_ring
+from custom_components.balter_era.const import (
+    CONF_CLOUD_RING,
+    CONF_FCM_CREDENTIALS,
+    CONF_RING_ENTITY,
+    DOMAIN,
+    signal_ring,
+)
 from custom_components.balter_era.pybalter import (
     DOOR_1,
     DOOR_2,
@@ -59,9 +65,11 @@ async def test_user_flow_errors(
     assert result["errors"] == {"base": key}
 
 
-async def _setup(hass: HomeAssistant) -> MockConfigEntry:
+async def _setup(hass: HomeAssistant, options: dict | None = None) -> MockConfigEntry:
     await async_setup_component(hass, "ffmpeg", {})
-    entry = MockConfigEntry(domain=DOMAIN, data=USER_INPUT, unique_id="user@example.com")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=USER_INPUT, options=options or {}, unique_id="user@example.com"
+    )
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -104,7 +112,7 @@ async def test_setup_auth_failed_starts_reauth(hass: HomeAssistant, mock_client:
 async def test_push_listener_started(
     hass: HomeAssistant, mock_client: AsyncMock, mock_push: MagicMock
 ) -> None:
-    await _setup(hass)
+    await _setup(hass, {CONF_CLOUD_RING: True})
     mock_push.return_value.async_start.assert_awaited_once()
     on_credentials = mock_push.call_args.kwargs["on_credentials"]
     on_credentials({"fcm": {"registration": {"token": "fcm-token"}}})
@@ -117,7 +125,7 @@ async def test_push_failure_does_not_break_setup(
     hass: HomeAssistant, mock_client: AsyncMock, mock_push: MagicMock
 ) -> None:
     mock_push.return_value.async_start.side_effect = RuntimeError("firebase down")
-    entry = await _setup(hass)
+    entry = await _setup(hass, {CONF_CLOUD_RING: True})
     assert entry.state is ConfigEntryState.LOADED
 
 
@@ -186,7 +194,7 @@ async def test_ring_from_account_session(hass: HomeAssistant, mock_client: Async
         await asyncio.Event().wait()
 
     mock_client.async_watch_forever.side_effect = _watch
-    entry = await _setup(hass)
+    entry = await _setup(hass, {CONF_CLOUD_RING: True})
     await asyncio.wait_for(started.wait(), 2)
     on_status = callbacks["on_status"]
     event_id = _entity(hass, "event", "doorbell")
@@ -213,3 +221,67 @@ async def test_ring_from_account_session(hass: HomeAssistant, mock_client: Async
     on_status(DeviceStatus(DEVICE.device_id, 1))
     await hass.async_block_till_done()
     assert hass.states.get(event_id).state != first.state
+
+
+async def test_cloud_ring_off_by_default(
+    hass: HomeAssistant, mock_client: AsyncMock, mock_push: MagicMock
+) -> None:
+    await _setup(hass)
+    mock_push.assert_not_called()
+    mock_client.async_watch_forever.assert_not_called()
+
+
+async def test_options_flow_sets_ring_entity(hass: HomeAssistant, mock_client: AsyncMock) -> None:
+    entry = await _setup(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_RING_ENTITY: "binary_sensor.shelly_klingel", CONF_CLOUD_RING: False}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.options[CONF_RING_ENTITY] == "binary_sensor.shelly_klingel"
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_ring_from_binary_sensor(hass: HomeAssistant, mock_client: AsyncMock) -> None:
+    sensor = "binary_sensor.shelly_klingel"
+    hass.states.async_set(sensor, "off")
+    entry = await _setup(hass, {CONF_RING_ENTITY: sensor})
+    event_id = _entity(hass, "event", "doorbell")
+
+    hass.states.async_set(sensor, "on")
+    await hass.async_block_till_done()
+    rung = hass.states.get(event_id)
+    assert rung.attributes["source"] == "entity"
+    assert rung.attributes["entity_id"] == sensor
+    mock_client.async_snapshot.assert_awaited_once_with(DEVICE)
+
+    # The bell signal pulses while ringing: no second ring within the dedupe window.
+    hass.states.async_set(sensor, "off")
+    hass.states.async_set(sensor, "on")
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id) == rung
+
+    # Coming back from unavailable is not a ring.
+    entry.runtime_data.last_ring.clear()
+    hass.states.async_set(sensor, "unavailable")
+    hass.states.async_set(sensor, "on")
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id) == rung
+
+
+async def test_ring_from_event_entity(hass: HomeAssistant, mock_client: AsyncMock) -> None:
+    shelly_event = "event.shelly_input_0"
+    hass.states.async_set(shelly_event, "2026-11-17T10:00:00.000+00:00", {"event_type": "single_push"})
+    await _setup(hass, {CONF_RING_ENTITY: shelly_event})
+    event_id = _entity(hass, "event", "doorbell")
+
+    # Attribute-only update: no ring.
+    hass.states.async_set(shelly_event, "2026-11-17T10:00:00.000+00:00", {"event_type": "x"})
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id).state == STATE_UNKNOWN
+
+    hass.states.async_set(shelly_event, "2026-11-17T10:05:00.000+00:00", {"event_type": "single_push"})
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id).attributes["entity_id"] == shelly_event

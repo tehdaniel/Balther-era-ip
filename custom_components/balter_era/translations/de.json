@@ -66,5 +66,21 @@
     "image_failed": {
       "message": "Kamerabild konnte nicht geladen werden: {error}"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Türklingel",
+        "description": "Woher das Klingeln kommt. Empfohlen: ein Sensor am Innenmonitor, z. B. ein Shelly-Eingang.",
+        "data": {
+          "ring_entity": "Klingel-Sensor",
+          "cloud_ring": "Zusätzlich auf die Balter-Cloud hören (experimentell)"
+        },
+        "data_description": {
+          "ring_entity": "Binärsensor, Schalter, Input-Boolean (klingelt beim Wechsel auf „an“) oder Event-Entität (klingelt bei jedem Ereignis).",
+          "cloud_ring": "Hält eine Verbindung zur Balter-Cloud offen und meldet sich für Push-Nachrichten an. Hat im Test kein Klingeln geliefert."
+        }
+      }
+    }
   }
 }

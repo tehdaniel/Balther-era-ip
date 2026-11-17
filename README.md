@@ -1,50 +1,169 @@
 # Balter ERA IP für Home Assistant
 
 Inoffizielle Home-Assistant-Integration für die Türsprechanlagen der Serie
-Balter ERA IP. Sie spricht dasselbe Cloud-Protokoll wie die (veraltete)
-Android-App „Balter ERA IP“.
+Balter ERA IP. Sie ersetzt die veraltete Android-App „Balter ERA IP“ und spricht
+dasselbe Cloud-Protokoll wie diese.
 
 > Nicht von Balter. Benutzung auf eigenes Risiko.
 
-## Stand
+## Funktionen
 
-| Funktion | Entität | Status |
+| Funktion | Entität (Beispiel) | Hinweis |
 |---|---|---|
-| Anmeldung mit App-Konto | – | ✅ am echten Gerät getestet |
-| Tür 1 / Tür 2 öffnen | `button.…_tur_1_offnen`, `button.…_tur_2_offnen` | ✅ Tür 2 am echten Gerät getestet |
-| Klingeln | `event.…_turklingel` (Ereignis `ring`) | neu, am echten Gerät noch ungetestet |
-| Kamerabild | `camera.…` (Standbild + MJPEG-Live-Bild) | neu, am echten Gerät noch ungetestet |
-| Kamerabild aktualisieren | `button.…_kamerabild_aktualisieren` | neu |
-| Betrieb rein im LAN | – | offen |
+| Tür 1 öffnen | `button.home_tur_1_offnen` | dauert 4–6 s, siehe unten |
+| Tür 2 öffnen | `button.home_tur_2_offnen` | |
+| Kamerabild | `camera.home` | Standbild + Live-Bild (MJPEG) |
+| Kamerabild aktualisieren | `button.home_kamerabild_aktualisieren` | Diagnose-Knopf |
+| Türklingel | `event.home_turklingel` | Ereignis `ring`, Quelle: Sensor am Innenmonitor (z. B. Shelly) |
 
-Jeder Zugriff auf die Kamera schaltet die Außenstation ein (ca. 3,5 s bis zum
-ersten Bild). Das Standbild wird deshalb zwischengespeichert und nur beim
-Klingeln, über den Aktualisieren-Knopf oder einmalig beim Start neu geholt.
-Das Live-Bild läuft, solange es in Home Assistant geöffnet ist.
+Die Entitäts-IDs hängen vom Gerätenamen in der Balter-App ab (hier „Home“).
 
-Klingel-Meldungen kommen wie in der App über eine dauerhaft offene
-Konto-Verbindung und zusätzlich als Firebase-Push. Kommt derselbe Anruf über
-beide Wege, wird er nur einmal gemeldet.
+**Gut zu wissen**
+
+- **Tür öffnen dauert 4–6 Sekunden.** Die Außenstation hängt am 2-Draht-Bus und
+  wird erst eingeschaltet, wenn ein Videostream startet (ca. 3,5 s). Befehle
+  davor ignoriert sie. Die Integration wartet deshalb auf das erste Videobild.
+- **Jeder Kamerazugriff schaltet die Außenstation ein.** Das Standbild wird
+  deshalb zwischengespeichert und nur beim Klingeln, über den Knopf
+  „Kamerabild aktualisieren“ oder einmal nach dem Start neu geholt. Das
+  Live-Bild läuft, solange die Kamera in Home Assistant geöffnet ist.
+- **Klingeln kommt nicht aus der Cloud.** Die Balter-Cloud hat im Test weder
+  per Push noch über die Konto-Verbindung ein Klingeln gemeldet. Das Klingeln
+  wird deshalb über einen Sensor am Innenmonitor erkannt (siehe unten).
+- Alles läuft über die Balter-Cloud (Server in Deutschland), es braucht also
+  Internet. Video und Steuerbefehle sind dort unverschlüsselt.
+
+## Voraussetzungen
+
+- Home Assistant 2025.2 oder neuer
+- Ein Konto der Balter-ERA-IP-App, mit dem die Anlage verknüpft ist.
+  **Empfohlen: ein eigenes Konto nur für Home Assistant** (in der App einen
+  zweiten Benutzer anlegen und die Anlage für ihn freigeben). Mit dem
+  Handy-Konto kann es passieren, dass sich App und Home Assistant gegenseitig
+  abmelden.
 
 ## Installation
 
-1. Ordner `custom_components/balter_era` nach `config/custom_components/` kopieren
-   (oder dieses Repository in HACS als benutzerdefiniertes Repository hinzufügen).
+### Über HACS (empfohlen)
+
+1. HACS → ⋮ (oben rechts) → **Benutzerdefinierte Repositories**
+2. Repository `https://github.com/tehdaniel/Balther-era-ip`, Typ **Integration**, hinzufügen
+3. „Balter ERA IP“ suchen, **Herunterladen**
+4. Home Assistant neu starten
+
+### Von Hand
+
+1. Den Ordner `custom_components/balter_era` aus diesem Repository nach
+   `config/custom_components/balter_era` kopieren (z. B. mit dem Samba- oder
+   File-Editor-Add-on).
 2. Home Assistant neu starten.
-3. *Einstellungen → Geräte & Dienste → Integration hinzufügen → Balter ERA IP*.
 
-Für Home Assistant am besten ein **eigenes App-Konto** anlegen und die Anlage
-dafür freigeben. Ein Konto kann nur an einer Stelle angemeldet sein, sonst wird
-die Handy-App abgemeldet.
+## Einrichtung
 
-## Ohne Home Assistant testen
+1. **Einstellungen → Geräte & Dienste → Integration hinzufügen → „Balter ERA IP“**
+2. Benutzername (E-Mail) und Passwort des Balter-Kontos eingeben.
+   „Server“ und „Port“ unverändert lassen.
+3. Es erscheint ein Gerät mit Kamera, Türklingel und den Knöpfen.
+
+## Klingeln mit einem Shelly erkennen
+
+Die Integration braucht für das Klingeln eine Entität, die beim Klingeln
+auslöst. Geeignet sind:
+
+| Entität | löst aus, wenn … |
+|---|---|
+| `binary_sensor`, `switch`, `input_boolean` | sie von „aus“ auf „an“ wechselt |
+| `event` (z. B. Shelly-Eingang im Taster-Modus) | ein neues Ereignis kommt |
+
+### Hardware
+
+- Den Shelly an einen Ausgang des Innenmonitors anschließen, der beim Klingeln
+  schaltet, z. B. einen Klingel- oder Alarmausgang. Welche Klemmen der Monitor
+  dafür hat, steht in seiner Anleitung.
+- Für Kleinspannungs- oder potentialfreie Signale eignet sich ein Shelly mit
+  passenden Eingängen, z. B. ein **Shelly Plus Uni**. Shellys, deren Eingänge
+  Netzspannung erwarten (z. B. Shelly i4), passen dafür nicht.
+- **Nicht direkt am 2-Draht-Bus abgreifen** und den Monitor nicht mit
+  Netzspannung verbinden. Bei Unsicherheit eine Elektrofachkraft fragen.
+- Den Shelly mit der Shelly-Integration in Home Assistant einbinden und prüfen,
+  welche Entität beim Klingeln umschaltet (Entwicklerwerkzeuge → Zustände).
+
+### Sensor in der Integration auswählen
+
+1. **Einstellungen → Geräte & Dienste → Balter ERA IP → Konfigurieren**
+2. Bei **Klingel-Sensor** die Shelly-Entität auswählen, speichern.
+
+Danach löst bei jedem Klingeln `event.home_turklingel` mit dem Ereignis `ring`
+aus, und das Kamerabild wird automatisch aktualisiert. Mehrfaches Auslösen
+innerhalb von 30 Sekunden zählt als ein Klingeln.
+
+Die Option **„Zusätzlich auf die Balter-Cloud hören (experimentell)“** hält eine
+Verbindung zur Balter-Cloud offen und registriert sich für deren
+Push-Nachrichten. Sie hat im Test kein Klingeln geliefert und ist deshalb aus.
+
+## Beispiel: Benachrichtigung mit Bild und „Tür öffnen“
+
+Für die Home-Assistant-App auf dem Handy. `notify.mobile_app_dein_handy` und die
+Entitäts-IDs an die eigenen anpassen.
+
+```yaml
+- alias: "Türklingel: Benachrichtigung mit Bild"
+  triggers:
+    - trigger: state
+      entity_id: event.home_turklingel
+      not_from: unavailable
+  actions:
+    # Das Bild wird nach dem Klingeln geholt (ca. 4 s)
+    - delay: "00:00:06"
+    - action: notify.mobile_app_dein_handy
+      data:
+        title: "Es klingelt"
+        message: "Jemand steht vor der Tür."
+        data:
+          image: /api/camera_proxy/camera.home
+          actions:
+            - action: BALTER_TUER_2
+              title: "Tür öffnen"
+
+- alias: "Türklingel: Tür aus der Benachrichtigung öffnen"
+  triggers:
+    - trigger: event
+      event_type: mobile_app_notification_action
+      event_data:
+        action: BALTER_TUER_2
+  actions:
+    - action: button.press
+      target:
+        entity_id: button.home_tur_2_offnen
+```
+
+## Fehlersuche
+
+Ausführliches Protokoll in `configuration.yaml`:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.balter_era: debug
+```
+
+| Problem | Lösung |
+|---|---|
+| „Benutzername oder Passwort falsch“ | Zugangsdaten in der Balter-App prüfen |
+| Tür öffnet nicht | Log prüfen: erscheint `station awake, first video after …`? Ohne Videobild ist die Außenstation nicht erreichbar. |
+| Kein Kamerabild | Knopf „Kamerabild aktualisieren“ drücken; `ffmpeg` muss in Home Assistant verfügbar sein (bei Home Assistant OS immer der Fall) |
+| Klingeln kommt nicht an | In den Optionen den richtigen Sensor wählen; prüfen, ob die Shelly-Entität beim Klingeln wirklich umschaltet |
+| Handy-App wird abgemeldet | Ein eigenes Konto für Home Assistant verwenden |
+
+### Ohne Home Assistant testen
+
+Mit Python 3.12+ auf dem PC, im Ordner dieses Repositorys:
 
 ```bash
 python tools/balter_cli.py dein@konto.de devices
 python tools/balter_cli.py dein@konto.de open --door 2 -v
 python tools/balter_cli.py dein@konto.de snapshot --out bild.jpg -v
-pip install firebase-messaging
-python tools/balter_cli.py dein@konto.de listen -v            # oder: listen --no-push
 ```
 
 `snapshot` braucht `ffmpeg` im PATH für JPEG (sonst wird die rohe `.h264` gespeichert).
