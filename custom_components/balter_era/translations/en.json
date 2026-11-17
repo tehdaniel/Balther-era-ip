@@ -8,11 +8,13 @@
           "username": "Username",
           "password": "Password",
           "host": "Server",
-          "port": "Port"
+          "port": "Port",
+          "ring_entity": "Doorbell sensor (optional)"
         },
         "data_description": {
           "host": "Balter cloud server. Only change this if Balter moves its server.",
-          "port": "Port of the account server."
+          "port": "Port of the account server.",
+          "ring_entity": "Entity that switches when the doorbell rings, e.g. a Shelly input on the indoor monitor. Can be changed later via \"Configure\"."
         }
       },
       "reauth_confirm": {

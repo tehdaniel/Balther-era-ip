@@ -12,7 +12,7 @@ dasselbe Cloud-Protokoll wie diese.
 |---|---|---|
 | Tür 1 öffnen | `button.home_tur_1_offnen` | dauert 4–6 s, siehe unten |
 | Tür 2 öffnen | `button.home_tur_2_offnen` | |
-| Kamerabild | `camera.home` | Standbild + Live-Bild (MJPEG) |
+| Kamera | `camera.home` | Standbild + Live-Video (Stream) |
 | Kamerabild aktualisieren | `button.home_kamerabild_aktualisieren` | Diagnose-Knopf |
 | Türklingel | `event.home_turklingel` | Ereignis `ring`, Quelle: Sensor am Innenmonitor (z. B. Shelly) |
 
@@ -26,7 +26,7 @@ Die Entitäts-IDs hängen vom Gerätenamen in der Balter-App ab (hier „Home“
 - **Jeder Kamerazugriff schaltet die Außenstation ein.** Das Standbild wird
   deshalb zwischengespeichert und nur beim Klingeln, über den Knopf
   „Kamerabild aktualisieren“ oder einmal nach dem Start neu geholt. Das
-  Live-Bild läuft, solange die Kamera in Home Assistant geöffnet ist.
+  Live-Video läuft nur, solange es jemand ansieht (siehe „Live-Video“).
 - **Klingeln kommt nicht aus der Cloud.** Die Balter-Cloud hat im Test weder
   per Push noch über die Konto-Verbindung ein Klingeln gemeldet. Das Klingeln
   wird deshalb über einen Sensor am Innenmonitor erkannt (siehe unten).
@@ -62,8 +62,22 @@ Die Entitäts-IDs hängen vom Gerätenamen in der Balter-App ab (hier „Home“
 
 1. **Einstellungen → Geräte & Dienste → Integration hinzufügen → „Balter ERA IP“**
 2. Benutzername (E-Mail) und Passwort des Balter-Kontos eingeben.
+   Optional gleich den **Klingel-Sensor** (z. B. Shelly) auswählen.
    „Server“ und „Port“ unverändert lassen.
 3. Es erscheint ein Gerät mit Kamera, Türklingel und den Knöpfen.
+
+## Live-Video
+
+Die Kamera liefert einen echten Videostream (H.264, 704×576). Die Integration
+stellt ihn Home Assistant intern bereit; Home Assistant zeigt ihn über WebRTC
+(go2rtc) bzw. HLS an – in der App, im Browser und in Dashboards.
+
+- **Im Dashboard:** Karte „Bild-Entität“ (Picture Entity) mit `camera.home` und
+  **Kameraansicht: Live**, oder einfach die Kamera antippen.
+- **Verzögerung:** einige Sekunden bis zum ersten Bild, weil die Außenstation
+  erst eingeschaltet wird (ca. 3,5 s), dazu die Pufferung von Home Assistant.
+- **„Stream vorladen“** in den Kamera-Einstellungen **nicht** aktivieren: Sonst
+  hält Home Assistant den Stream dauerhaft offen und die Außenstation bleibt an.
 
 ## Klingeln mit einem Shelly erkennen
 
@@ -90,8 +104,14 @@ auslöst. Geeignet sind:
 
 ### Sensor in der Integration auswählen
 
-1. **Einstellungen → Geräte & Dienste → Balter ERA IP → Konfigurieren**
-2. Bei **Klingel-Sensor** die Shelly-Entität auswählen, speichern.
+Entweder direkt bei der Einrichtung, oder später:
+
+1. **Einstellungen → Geräte & Dienste → Balter ERA IP**
+2. Beim Eintrag auf **Konfigurieren** (Zahnrad bzw. ⋮-Menü) klicken.
+3. Bei **Klingel-Sensor** die Shelly-Entität auswählen, speichern.
+
+Gibt es „Konfigurieren“ nicht, ist eine alte Version installiert (vor 0.3.0):
+in HACS aktualisieren und Home Assistant neu starten.
 
 Danach löst bei jedem Klingeln `event.home_turklingel` mit dem Ereignis `ring`
 aus, und das Kamerabild wird automatisch aktualisiert. Mehrfaches Auslösen
@@ -153,6 +173,7 @@ logger:
 | „Benutzername oder Passwort falsch“ | Zugangsdaten in der Balter-App prüfen |
 | Tür öffnet nicht | Log prüfen: erscheint `station awake, first video after …`? Ohne Videobild ist die Außenstation nicht erreichbar. |
 | Kein Kamerabild | Knopf „Kamerabild aktualisieren“ drücken; `ffmpeg` muss in Home Assistant verfügbar sein (bei Home Assistant OS immer der Fall) |
+| Kein Live-Video | Die Integrationen `stream` bzw. `go2rtc` müssen aktiv sein (Standard bei `default_config:`); Log auf Meldungen von `balter_era` und `stream` prüfen |
 | Klingeln kommt nicht an | In den Optionen den richtigen Sensor wählen; prüfen, ob die Shelly-Entität beim Klingeln wirklich umschaltet |
 | Handy-App wird abgemeldet | Ein eigenes Konto für Home Assistant verwenden |
 

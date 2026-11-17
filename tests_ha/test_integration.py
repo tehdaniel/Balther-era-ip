@@ -43,10 +43,15 @@ async def test_user_flow(hass: HomeAssistant, mock_client: AsyncMock) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**USER_INPUT, CONF_RING_ENTITY: "binary_sensor.shelly_klingel"}
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Balter ERA (Home)"
-    assert result["result"].unique_id == "user@example.com"
+    entry = result["result"]
+    assert entry.unique_id == "user@example.com"
+    assert CONF_RING_ENTITY not in entry.data
+    assert entry.options == {CONF_RING_ENTITY: "binary_sensor.shelly_klingel"}
 
 
 @pytest.mark.parametrize(
@@ -285,3 +290,28 @@ async def test_ring_from_event_entity(hass: HomeAssistant, mock_client: AsyncMoc
     hass.states.async_set(shelly_event, "2026-11-17T10:05:00.000+00:00", {"event_type": "single_push"})
     await hass.async_block_till_done()
     assert hass.states.get(event_id).attributes["entity_id"] == shelly_event
+
+
+async def test_camera_stream_source(
+    hass: HomeAssistant, mock_client: AsyncMock, socket_enabled: None
+) -> None:
+    """The camera offers a real stream: MPEG-TS on a loopback TCP port."""
+    from homeassistant.components.camera import CameraEntityFeature, async_get_stream_source
+
+    entry = await _setup(hass)
+    camera_id = _entity(hass, "camera", "camera")
+    assert hass.states.get(camera_id).attributes["supported_features"] & CameraEntityFeature.STREAM
+    url = await async_get_stream_source(hass, camera_id)
+    assert url and url.startswith("tcp://127.0.0.1:")
+
+    host, port = url.removeprefix("tcp://").split(":")
+    reader, writer = await asyncio.open_connection(host, int(port))
+    data = await asyncio.wait_for(reader.read(188 * 4), 10)
+    writer.close()
+    assert data[0] == 0x47  # MPEG-TS sync byte
+    mock_client.async_stream.assert_called_with(DEVICE)
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.raises(OSError):
+        await asyncio.open_connection(host, int(port))

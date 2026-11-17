@@ -2,16 +2,18 @@
 
 Every access powers up the outdoor station, so still images are cached and
 only refreshed on a ring, via the refresh button, or once when none exists
-yet.  Opening the camera in the UI starts an MJPEG live view.
+yet.  Live video is offered as a real stream (MPEG-TS on a loopback port, used
+by Home Assistant's stream integration / go2rtc) and as MJPEG.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
 
-from homeassistant.components.camera import Camera
+from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_stream
@@ -21,7 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import BalterConfigEntry, async_refresh_image
 from .const import signal_image
 from .entity import BalterEntity
-from .media import MJPEG_CONTENT_TYPE, MjpegTranscoder
+from .media import MJPEG_CONTENT_TYPE, MJPEG_OUTPUT, FfmpegPipe, StreamServer
 from .pybalter import BalterError, DeviceRecord
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,11 +42,14 @@ class BalterCamera(BalterEntity, Camera):
     """Outdoor station camera."""
 
     _attr_name = None
+    _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(self, entry: BalterConfigEntry, device: DeviceRecord) -> None:
         BalterEntity.__init__(self, entry, device, "camera")
         Camera.__init__(self)
         self._initial_fetch_done = False
+        self._stream_server: StreamServer | None = None
+        self._stream_lock = asyncio.Lock()
 
     async def async_added_to_hass(self) -> None:
         """Update the picture when a new image arrives."""
@@ -56,6 +61,32 @@ class BalterCamera(BalterEntity, Camera):
                 self._on_new_image,
             )
         )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Close the local stream port."""
+        if self._stream_server:
+            await self._stream_server.stop()
+        await super().async_will_remove_from_hass()
+
+    async def stream_source(self) -> str | None:
+        """Loopback MPEG-TS stream, started on first use.
+
+        Each viewer session wakes the outdoor station.
+        """
+        async with self._stream_lock:
+            if self._stream_server is None:
+                client = self._entry.runtime_data.client
+                server = StreamServer(
+                    get_ffmpeg_manager(self.hass).binary,
+                    lambda: client.async_stream(self._device),
+                )
+                try:
+                    await server.start()
+                except OSError as err:
+                    _LOGGER.warning("Could not open the local stream port: %s", err)
+                    return None
+                self._stream_server = server
+        return self._stream_server.url
 
     @callback
     def _on_new_image(self) -> None:
@@ -79,9 +110,10 @@ class BalterCamera(BalterEntity, Camera):
         self, request: web.Request
     ) -> web.StreamResponse | None:
         """Live view: H.264 from the relay, transcoded to MJPEG by ffmpeg."""
-        transcoder = MjpegTranscoder(
+        transcoder = FfmpegPipe(
             get_ffmpeg_manager(self.hass).binary,
             self._entry.runtime_data.client.async_stream(self._device),
+            MJPEG_OUTPUT,
         )
         stream = await transcoder.start()
         try:
