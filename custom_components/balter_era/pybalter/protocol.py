@@ -32,6 +32,9 @@ ACC_DEVICE_LIST_REQUEST = 0x000D
 ACC_DEVICE_LIST = 0x000E
 ACC_LOGIN = 0x0020
 ACC_LOGIN_REPLY = 0x0021
+ACC_STATUS_REQUEST = 0x0025
+ACC_STATUS = 0x0026  # also pushed by the server; must be acknowledged
+ACC_STATUS_ACK = 0x0103
 ACC_CONNECT_REQUEST = 0x0027
 ACC_CONNECT_INFO = 0x0028
 ACC_CHALLENGE_REQUEST = 0x0030
@@ -293,6 +296,48 @@ def build_connect_request(login: LoginResult, device_id: int) -> bytes:
         + bytes(19)
     )
     return frame(account_header(ACC_CONNECT_REQUEST) + body)
+
+
+STATUS_ONLINE = 6
+STATUS_OFFLINE = 7
+
+
+@dataclass(frozen=True)
+class DeviceStatus:
+    """One entry of an ``ACC_STATUS`` message."""
+
+    device_id: int
+    status: int
+
+    @property
+    def is_alarm(self) -> bool:
+        """The SDK reports every status except online/offline as an alarm (call)."""
+        return self.status not in (STATUS_ONLINE, STATUS_OFFLINE)
+
+
+def build_status_request(login: LoginResult, device_ids: list[int]) -> bytes:
+    """Ask for the status of devices (the app does this after login)."""
+    body = u32(login.user_id) + u32(login.session_id) + u32(len(device_ids))
+    body += b"".join(u32(device_id) for device_id in device_ids)
+    return frame(account_header(ACC_STATUS_REQUEST) + body)
+
+
+def build_status_ack() -> bytes:
+    """Acknowledge an ``ACC_STATUS`` message (``SendCmd_GetDeviceStatusRepACK``)."""
+    return frame(account_header(ACC_STATUS_ACK))
+
+
+def parse_status(body: bytes) -> list[DeviceStatus]:
+    """Parse ``user_id, session, count, count x (device_id, status), ...``."""
+    if len(body) < 12:
+        raise BalterProtocolError("status message too short")
+    count = read_u32(body, 8)
+    if len(body) < 12 + count * 8:
+        raise BalterProtocolError("status message truncated")
+    return [
+        DeviceStatus(read_u32(body, 12 + i * 8), read_u32(body, 16 + i * 8))
+        for i in range(count)
+    ]
 
 
 def build_set_push(user_id: int, operation: int, token: str) -> bytes:

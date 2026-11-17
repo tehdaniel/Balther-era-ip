@@ -141,5 +141,28 @@ class PushAndMediaTests(unittest.TestCase):
         self.assertFalse(frame.is_keyframe)
 
 
+class StatusTests(unittest.TestCase):
+    def test_status_request_layout(self) -> None:
+        frame = p.build_status_request(p.LoginResult(0x1234, 0xABCDEF), [0x5678])
+        self.assertEqual(frame[6:8], b"\x00\x25")
+        self.assertEqual(frame[4 + p.HEADER_LEN :].hex(), "00001234" "00abcdef" "00000001" "00005678")
+
+    def test_status_ack_is_empty_0103(self) -> None:
+        frame = p.build_status_ack()
+        self.assertEqual((frame[6:8], len(frame)), (b"\x01\x03", 4 + p.HEADER_LEN))
+
+    def test_parse_status_online_is_not_alarm(self) -> None:
+        # Layout as captured from the server: user, session, count, (device, status), extra.
+        body = bytes.fromhex("00001234" "00abcdef" "00000001" "00005678" "00000006" "0100")
+        (status,) = p.parse_status(body)
+        self.assertEqual((status.device_id, status.status, status.is_alarm), (0x5678, 6, False))
+
+    def test_other_status_is_alarm(self) -> None:
+        body = p.u32(1) + p.u32(2) + p.u32(2) + p.u32(10) + p.u32(7) + p.u32(11) + p.u32(1)
+        offline, calling = p.parse_status(body)
+        self.assertFalse(offline.is_alarm)
+        self.assertTrue(calling.is_alarm)
+
+
 if __name__ == "__main__":
     unittest.main()

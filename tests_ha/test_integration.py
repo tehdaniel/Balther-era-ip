@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.balter_era import async_fire_ring
 from custom_components.balter_era.const import CONF_FCM_CREDENTIALS, DOMAIN, signal_ring
 from custom_components.balter_era.pybalter import (
     DOOR_1,
@@ -169,3 +171,45 @@ async def test_mjpeg_live_view(
     assert b"--ffmpeg" in body
     assert b"\xff\xd8" in body
     mock_client.async_stream.assert_called_once_with(DEVICE)
+
+
+async def test_ring_from_account_session(hass: HomeAssistant, mock_client: AsyncMock) -> None:
+    """A call reported on the account session fires one ring per call."""
+    from custom_components.balter_era.pybalter.protocol import DeviceStatus
+
+    started = asyncio.Event()
+    callbacks: dict = {}
+
+    async def _watch(device_ids, on_status, **_kwargs):
+        callbacks["on_status"] = on_status
+        started.set()
+        await asyncio.Event().wait()
+
+    mock_client.async_watch_forever.side_effect = _watch
+    entry = await _setup(hass)
+    await asyncio.wait_for(started.wait(), 2)
+    on_status = callbacks["on_status"]
+    event_id = _entity(hass, "event", "doorbell")
+
+    on_status(DeviceStatus(DEVICE.device_id, 6))  # online: nothing
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id).state == STATE_UNKNOWN
+
+    on_status(DeviceStatus(DEVICE.device_id, 1))  # call
+    await hass.async_block_till_done()
+    first = hass.states.get(event_id)
+    assert first.attributes["source"] == "account"
+    assert first.attributes["status"] == 1
+
+    # Same call reported again, and the same call arriving as Firebase push:
+    on_status(DeviceStatus(DEVICE.device_id, 1))
+    async_fire_ring(hass, entry, DEVICE, {"source": "push"})
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id) == first
+
+    # Call ends, a later call rings again (after the dedupe window).
+    on_status(DeviceStatus(DEVICE.device_id, 6))
+    entry.runtime_data.last_ring.clear()
+    on_status(DeviceStatus(DEVICE.device_id, 1))
+    await hass.async_block_till_done()
+    assert hass.states.get(event_id).state != first.state

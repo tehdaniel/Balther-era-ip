@@ -45,6 +45,7 @@ class FakeCloud:
     def __init__(self) -> None:
         self.doors: list[int] = []
         self.push: list[bytes] = []
+        self.acks = 0
         self.relay_port = 0
 
     async def account(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -79,6 +80,15 @@ class FakeCloud:
                     writer.write(_reply(p.CLASS_ACCOUNT, p.ACC_CONNECT_INFO, body))
                 elif msg.cmd == p.ACC_SET_PUSH:
                     self.push.append(msg.body)
+                elif msg.cmd == p.ACC_STATUS_REQUEST:
+                    # Answer like the server, then push a call a moment later.
+                    status = p.u32(0x1234) + p.u32(0xABCDEF) + p.u32(1) + p.u32(0x5678)
+                    writer.write(_reply(p.CLASS_ACCOUNT, p.ACC_STATUS, status + p.u32(6) + b"\x01\x00"))
+                    await writer.drain()
+                    await asyncio.sleep(0.05)
+                    writer.write(_reply(p.CLASS_ACCOUNT, p.ACC_STATUS, status + p.u32(1) + b"\x01\x00"))
+                elif msg.cmd == p.ACC_STATUS_ACK:
+                    self.acks += 1
                 await writer.drain()
         except asyncio.IncompleteReadError:
             pass
@@ -188,6 +198,25 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p.read_u32(added, 1), 0x1234)
         self.assertEqual(added[15], p.PUSH_OS_GOOGLE)
         self.assertEqual(added[16 : 17 + added[16]], p.varstr(b"fcm-token"))
+
+    async def test_watch_reports_call_and_acknowledges(self) -> None:
+        client = self.client()
+        seen: list[p.DeviceStatus] = []
+        call = asyncio.Event()
+
+        def on_status(status: p.DeviceStatus) -> None:
+            seen.append(status)
+            if status.is_alarm:
+                call.set()
+
+        task = asyncio.create_task(client.async_watch([0x5678], on_status))
+        await asyncio.wait_for(call.wait(), 2)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual([(s.device_id, s.status) for s in seen], [(0x5678, 6), (0x5678, 1)])
+        self.assertEqual(self.cloud.acks, 2)
 
 
 if __name__ == "__main__":
