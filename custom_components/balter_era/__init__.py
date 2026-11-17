@@ -31,6 +31,7 @@ from .pybalter import (
     BalterError,
     DeviceRecord,
 )
+from .pybalter.protocol import DeviceStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,28 @@ class BalterData:
     images: dict[str, bytes] = field(default_factory=dict)
     push: Any = None
     refreshing: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    in_call: set[int] = field(default_factory=set)
+    last_ring: dict[str, float] = field(default_factory=dict)
+
+
+RING_DEDUPE_SECONDS = 30.0
+
+
+@callback
+def async_fire_ring(
+    hass: HomeAssistant,
+    entry: BalterConfigEntry,
+    device: DeviceRecord,
+    payload: dict[str, Any],
+) -> None:
+    """Fire the ring signal once, even if both channels report the same call."""
+    data = entry.runtime_data
+    now = hass.loop.time()
+    if now - data.last_ring.get(device.serial, -RING_DEDUPE_SECONDS) < RING_DEDUPE_SECONDS:
+        _LOGGER.debug("Ignoring duplicate ring report: %s", payload)
+        return
+    data.last_ring[device.serial] = now
+    async_dispatcher_send(hass, signal_ring(entry.entry_id, device.serial), payload)
 
 
 type BalterConfigEntry = ConfigEntry[BalterData]
@@ -96,7 +119,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: BalterConfigEntry) -> bo
     entry.async_create_background_task(
         hass, _async_start_push(hass, entry), f"{entry.title} doorbell push"
     )
+    entry.async_create_background_task(
+        hass, _async_watch(hass, entry), f"{entry.title} account session"
+    )
     return True
+
+
+async def _async_watch(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
+    """Keep an account session open; the server reports calls on it."""
+    data = entry.runtime_data
+    by_id = {device.device_id: device for device in data.devices}
+
+    @callback
+    def _on_status(status: DeviceStatus) -> None:
+        device = by_id.get(status.device_id)
+        if device is None:
+            return
+        if not status.is_alarm:
+            data.in_call.discard(status.device_id)
+            return
+        if status.device_id in data.in_call:
+            return  # same call reported again
+        data.in_call.add(status.device_id)
+        async_fire_ring(hass, entry, device, {"source": "account", "status": status.status})
+
+    try:
+        await data.client.async_watch_forever(list(by_id), _on_status)
+    except BalterAuthError:
+        entry.async_start_reauth(hass)
 
 
 async def _async_start_push(hass: HomeAssistant, entry: BalterConfigEntry) -> None:
@@ -115,9 +165,7 @@ async def _async_start_push(hass: HomeAssistant, entry: BalterConfigEntry) -> No
     def _on_push(payload: dict[str, Any]) -> None:
         _LOGGER.debug("Doorbell push: %s", payload)
         for device in data.devices:
-            async_dispatcher_send(
-                hass, signal_ring(entry.entry_id, device.serial), payload
-            )
+            async_fire_ring(hass, entry, device, {"source": "push", **payload})
 
     listener = BalterPushListener(
         data.client,

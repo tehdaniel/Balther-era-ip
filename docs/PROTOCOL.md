@@ -105,8 +105,24 @@ dem Stream-Start ist ein Schlüsselbild mit SPS, PPS, SEI und IDR.
 
 ## Klingeln
 
-Klingel-Ereignisse kommen nicht über die Verbindungen der App, sondern als
-Firebase-Push (Projekt `bell-vision-project`, Absender-ID `208250547295`).
+Es gibt zwei Wege:
+
+**1. Konto-Kanal (solange eine Sitzung offen ist).** Der Server schickt
+`0x0026` (auch unaufgefordert); der Client muss jede mit `0x0103` (leerer Body,
+`SendCmd_GetDeviceStatusRepACK`) bestätigen. Body:
+
+```
+u32 user_id, u32 login_session, u32 anzahl, anzahl × (u32 device_id, u32 status), …
+```
+
+Status 6 = online, 7 = offline, **jeder andere Wert ist ein Alarm/Anruf**
+(`CDServerRecv::OnGetDeviceStatus` → `CDServer::OnAlarm` → App `onCall`). Die App
+fragt den Status nach dem Login mit `0x0025` (`u32 user_id, u32 login_session,
+u32 anzahl, anzahl × u32 device_id`) an und hält die Sitzung mit `02 01` alle
+10 s offen.
+
+**2. Firebase-Push** (Projekt `bell-vision-project`, Absender-ID `208250547295`),
+wenn die App nicht verbunden ist.
 
 Token hinterlegen: Befehl `0x004d` (`SendCmd_SetPushInfoEx`) auf dem Konto-Kanal:
 
@@ -116,10 +132,12 @@ u8 Sprache (2 = Englisch), u32 2, u8 1, u8 pushOS (13 = Google), varstr Token,
 u8 0, u8 altes pushOS, varstr altes Token
 ```
 
-Der Inhalt der Push-Nachricht ist noch nicht bekannt.
+Der Server bestätigt mit `0x004e` (Echo der Push-Daten). Ob und mit welchem
+Inhalt Klingel-Pushes an einen als Web-Push registrierten Empfänger gehen, ist
+noch offen: im ersten Test kam beim Klingeln nichts an.
 
 ## Offen
 
-- Inhalt der Klingel-Push-Nachricht auswerten (Klingeln vs. andere Meldungen).
+- Statuswert beim Klingeln bestätigen; Firebase-Push an Web-Push-Empfänger klären.
 - Audio (33-Byte-Frames, Codec unbekannt) und Gegensprechen.
 - Direktverbindung im LAN (Monitore lauschen auf TCP/UDP 14622).

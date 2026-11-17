@@ -22,8 +22,9 @@ ersten Bild). Das Standbild wird deshalb zwischengespeichert und nur beim
 Klingeln, über den Aktualisieren-Knopf oder einmalig beim Start neu geholt.
 Das Live-Bild läuft, solange es in Home Assistant geöffnet ist.
 
-Klingel-Meldungen kommen wie in der App als Firebase-Push. Home Assistant
-registriert dafür ein eigenes Push-Token beim Balter-Konto.
+Klingel-Meldungen kommen wie in der App über eine dauerhaft offene
+Konto-Verbindung und zusätzlich als Firebase-Push. Kommt derselbe Anruf über
+beide Wege, wird er nur einmal gemeldet.
 
 ## Installation
 
@@ -43,7 +44,7 @@ python tools/balter_cli.py dein@konto.de devices
 python tools/balter_cli.py dein@konto.de open --door 2 -v
 python tools/balter_cli.py dein@konto.de snapshot --out bild.jpg -v
 pip install firebase-messaging
-python tools/balter_cli.py dein@konto.de listen -v
+python tools/balter_cli.py dein@konto.de listen -v            # oder: listen --no-push
 ```
 
 `snapshot` braucht `ffmpeg` im PATH für JPEG (sonst wird die rohe `.h264` gespeichert).

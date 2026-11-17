@@ -7,7 +7,8 @@
 
 The password is asked for interactively. Add -v for protocol debug output.
 "snapshot" needs ffmpeg on the PATH for JPEG output (otherwise .h264 is saved),
-"listen" needs:  pip install firebase-messaging
+"listen" uses the account session and Firebase push (pip install firebase-messaging);
+use --no-push to skip Firebase.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import logging
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom_components" / "balter_era"))
@@ -45,25 +47,40 @@ async def snapshot(client: BalterClient, device, out: Path) -> None:
     print(f"Bild gespeichert: {out}")
 
 
-async def listen(client: BalterClient) -> None:
-    from pybalter.push import BalterPushListener  # noqa: PLC0415
+async def listen(client: BalterClient, devices: list, use_push: bool) -> None:
+    """Listen on both channels: the account session and (optionally) Firebase."""
+    stamp = lambda: datetime.now().strftime("%H:%M:%S")  # noqa: E731
 
-    def on_push(payload: dict) -> None:
-        print("PUSH:", json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+    def on_status(status) -> None:
+        kind = "KLINGELN/ALARM" if status.is_alarm else "Status"
+        print(f"{stamp()} {kind}: Gerät 0x{status.device_id:x} Status {status.status}", flush=True)
 
-    credentials = json.loads(FCM_FILE.read_text()) if FCM_FILE.exists() else None
-    listener = BalterPushListener(
-        client,
-        on_push,
-        credentials=credentials,
-        on_credentials=lambda creds: FCM_FILE.write_text(json.dumps(creds)),
-    )
-    await listener.async_start()
+    def on_message(msg) -> None:
+        print(f"{stamp()} KONTO: cmd 0x{msg.cmd:04x} {msg.body.hex()}", flush=True)
+
+    listener = None
+    if use_push:
+        from pybalter.push import BalterPushListener  # noqa: PLC0415
+
+        def on_push(payload: dict) -> None:
+            print(f"{stamp()} PUSH:", json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+
+        credentials = json.loads(FCM_FILE.read_text()) if FCM_FILE.exists() else None
+        listener = BalterPushListener(
+            client,
+            on_push,
+            credentials=credentials,
+            on_credentials=lambda creds: FCM_FILE.write_text(json.dumps(creds)),
+        )
+        await listener.async_start()
     print("Warte auf Klingeln ... (Strg+C beendet)", flush=True)
     try:
-        await asyncio.Event().wait()
+        await client.async_watch_forever(
+            [device.device_id for device in devices], on_status, on_message=on_message
+        )
     finally:
-        await listener.async_stop()
+        if listener:
+            await listener.async_stop()
 
 
 async def main(args: argparse.Namespace) -> None:
@@ -80,7 +97,7 @@ async def main(args: argparse.Namespace) -> None:
     elif args.command == "snapshot":
         await snapshot(client, device, Path(args.out))
     elif args.command == "listen":
-        await listen(client)
+        await listen(client, devices, not args.no_push)
 
 
 if __name__ == "__main__":
@@ -90,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument("--door", type=int, choices=(1, 2), default=2)
     parser.add_argument("--device", type=int, default=0, help="Index aus 'devices'")
     parser.add_argument("--out", default="balter_snapshot.jpg")
+    parser.add_argument("--no-push", action="store_true", help="listen: nur Konto-Verbindung, ohne Firebase")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("-v", "--verbose", action="store_true")

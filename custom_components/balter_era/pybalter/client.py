@@ -66,15 +66,20 @@ class _Connection:
 
     async def read(self) -> p.Message:
         """Read the next frame, skipping keepalives."""
+        while (msg := await self.read_frame()) is None:
+            pass
+        return msg
+
+    async def read_frame(self) -> p.Message | None:
+        """Read the next frame; None for a keepalive."""
         try:
-            while True:
-                magic = await self._reader.readexactly(2)
-                if magic == p.KEEPALIVE:
-                    continue
-                if magic != p.FRAME_MAGIC:
-                    raise BalterProtocolError(f"unexpected frame start {magic.hex()}")
-                length = int.from_bytes(await self._reader.readexactly(2), "big")
-                return p.parse_payload(await self._reader.readexactly(length))
+            magic = await self._reader.readexactly(2)
+            if magic == p.KEEPALIVE:
+                return None
+            if magic != p.FRAME_MAGIC:
+                raise BalterProtocolError(f"unexpected frame start {magic.hex()}")
+            length = int.from_bytes(await self._reader.readexactly(2), "big")
+            return p.parse_payload(await self._reader.readexactly(length))
         except asyncio.IncompleteReadError as err:
             raise BalterConnectionError("connection closed by server") from err
         except OSError as err:
@@ -207,6 +212,68 @@ class BalterClient:
             # The reply format is not known yet; log what comes back.
             await conn.log_incoming(2.0)
         _LOGGER.debug("push token %s", "registered" if register else "removed")
+
+    async def async_watch(
+        self,
+        device_ids: list[int],
+        on_status: Callable[[p.DeviceStatus], None],
+        *,
+        on_message: Callable[[p.Message], None] | None = None,
+    ) -> None:
+        """Hold an account session open and report device status pushes.
+
+        Like the app, the server pushes ``ACC_STATUS`` while a session is
+        open; any status other than online/offline is a call (doorbell).
+        Returns only by raising (connection lost) or when cancelled.
+        """
+        async with self._account() as (conn, login):
+            await conn.send(p.build_status_request(login, device_ids))
+            pinger = asyncio.get_running_loop().create_task(self._keepalive(conn))
+            try:
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(
+                            conn.read_frame(), 3 * KEEPALIVE_INTERVAL
+                        )
+                    except TimeoutError as err:
+                        raise BalterConnectionError("account session went silent") from err
+                    if msg is None or msg.msg_type != p.MSG_CONTROL:
+                        continue
+                    _LOGGER.debug("account push cmd 0x%04x %s", msg.cmd, msg.body.hex())
+                    if on_message:
+                        on_message(msg)
+                    if msg.cmd == p.ACC_STATUS:
+                        await conn.send(p.build_status_ack())
+                        for status in p.parse_status(msg.body):
+                            on_status(status)
+            finally:
+                pinger.cancel()
+                with contextlib.suppress(asyncio.CancelledError, BalterError):
+                    await pinger
+
+    async def async_watch_forever(
+        self,
+        device_ids: list[int],
+        on_status: Callable[[p.DeviceStatus], None],
+        *,
+        on_message: Callable[[p.Message], None] | None = None,
+        max_delay: float = 300.0,
+    ) -> None:
+        """``async_watch`` with reconnects; stops only on auth errors or cancel."""
+        delay = 5.0
+        while True:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            try:
+                await self.async_watch(device_ids, on_status, on_message=on_message)
+            except BalterAuthError:
+                raise
+            except BalterError as err:
+                if loop.time() - started > 60:
+                    delay = 5.0
+                _LOGGER.debug("account session lost (%s), reconnecting in %.0f s", err, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
 
     # --- view session ------------------------------------------------------
 
