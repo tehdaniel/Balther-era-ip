@@ -8,11 +8,13 @@
           "username": "Benutzername",
           "password": "Passwort",
           "host": "Server",
-          "port": "Port"
+          "port": "Port",
+          "ring_entity": "Klingel-Sensor (optional)"
         },
         "data_description": {
           "host": "Balter-Cloud-Server. Nur ändern, falls Balter den Server wechselt.",
-          "port": "Port des Konto-Servers."
+          "port": "Port des Konto-Servers.",
+          "ring_entity": "Entität, die beim Klingeln schaltet, z. B. ein Shelly-Eingang am Innenmonitor. Später unter „Konfigurieren“ änderbar."
         }
       },
       "reauth_confirm": {

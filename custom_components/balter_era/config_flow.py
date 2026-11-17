@@ -30,16 +30,20 @@ from .pybalter import (
 
 _LOGGER = logging.getLogger(__name__)
 
+RING_ENTITY_DOMAINS = ["binary_sensor", "event", "input_boolean", "switch"]
+RING_ENTITY_SELECTOR = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain=RING_ENTITY_DOMAINS)
+)
 USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_RING_ENTITY): RING_ENTITY_SELECTOR,
         vol.Optional(CONF_HOST, default=DEFAULT_HOST): str,
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
     }
 )
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
-RING_ENTITY_DOMAINS = ["binary_sensor", "event", "input_boolean", "switch"]
 
 
 async def _validate(data: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
@@ -77,9 +81,13 @@ class BalterConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(user_input[CONF_USERNAME].strip().lower())
             self._abort_if_unique_id_configured()
-            title, errors = await _validate(user_input)
+            data = dict(user_input)
+            options = {}
+            if ring_entity := data.pop(CONF_RING_ENTITY, None):
+                options[CONF_RING_ENTITY] = ring_entity
+            title, errors = await _validate(data)
             if title:
-                return self.async_create_entry(title=title, data=user_input)
+                return self.async_create_entry(title=title, data=data, options=options)
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
@@ -122,9 +130,7 @@ class BalterOptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
         schema = vol.Schema(
             {
-                vol.Optional(CONF_RING_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=RING_ENTITY_DOMAINS)
-                ),
+                vol.Optional(CONF_RING_ENTITY): RING_ENTITY_SELECTOR,
                 vol.Optional(CONF_CLOUD_RING, default=False): bool,
             }
         )
